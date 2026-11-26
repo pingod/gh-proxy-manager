@@ -7,7 +7,7 @@
 <a id="中文"></a>
 ## 中文
 
-用 **Rust + GTK4** 完全重写的 GitHub 下载加速管理器（v3.0.0）。
+用 **Rust + GTK4** 完全重写的 GitHub 下载加速管理器（v3.1.0）。
 
 旧版是一个 700 行的 Bash + yad/zenity 脚本；新版把“状态探测 / 配置生成 / 提权执行 /
 测速”拆成可单元测试的库，CLI 与原生 GTK4 界面共用同一套逻辑。
@@ -15,6 +15,8 @@
 
 本仓库：<https://github.com/pingod/gh-proxy-manager> ·
 原始 2.x Bash 版本：<https://github.com/Duter2016/gh-proxy-manager>
+
+更新日志：[CHANGELOG.md](CHANGELOG.md)
 
 ### 解决什么问题
 
@@ -28,15 +30,27 @@
 - **git clone 加速**：一键启停全局 `url.<前缀>.insteadOf` 规则，只动值恰为
   `https://github.com/` 的规则，绝不碰你其它的 `insteadOf`
 - **真实测速**：直接下载 release 文件并显示 KB/s，暴露“raw 能通但 release 404/限速”的坏站
-- **云端节点测速**：拉取 hubp 节点列表，32 并发测速，用固定图标的 SHA-256 校验节点
-  是否被篡改，只保留通过校验的节点，结果缓存 2 小时
+- **云端节点清单**：从可管理的接口拉取节点列表，清单里的地址**全部**去重并入备选，
+  已有地址不覆盖；界面只负责拉取，`nodes` 命令才会做 32 并发 SHA-256 校验（结果缓存 2 小时）
+- **节点接口管理**：内置默认接口，可添加多个接口并选择从哪个接口拉取，当前接口在界面上直接显示
+- **批量删除 + 黑名单**：直接在列表里勾选、一键删除（不再弹窗确认），也可一键「删除不可用」清理测速失败的地址、
+  一键「删除慢速」清理低于 200 KB/s 的地址；删除的地址自动进黑名单，之后拉取清单时跳过；黑名单支持筛选、
+  单个恢复、全部恢复，以及彻底清空
+- **批量测速**：可按「全部 / 未测速 / 已测速 / 不可用」范围并发（8 路）测速，
+  结果写回列表并立即重新排序
+- **列表筛选与排序**：备选地址按实测速度从快到慢排列（测速失败/未测速的排在后面），
+  并可和黑名单一样按地址 / 速度 / 可用 / 未测试等关键字实时过滤
 - **链接规范化**：`codeload.github.com/.../zip/ref` 自动还原成
   `github.com/.../archive/ref.zip`，`/blob/` 还原成 `/raw/`；release / archive /
   raw / gist 链接全部识别
 - **自动换站**：失败或 <20KB/s 持续 30s 时，按备选列表断点续传换下一站（可开关）
 - **可选 jsDelivr**：`raw.githubusercontent.com` 走 CDN，失败自动回退加速站
 - **开关零残留**：关闭即恢复直连；`reset` 一条命令清理运行时文件
-- **原生界面**：GTK4 + libadwaita，单窗口完成所有操作，密码只在本次提权使用
+- **原生界面**：GTK4 + libadwaita，单窗口完成所有操作；内置「调试日志」页，
+  实时流式显示（文件写入即推送，不再轮询），自动跟随最新：向上滚动暂停、回到底部恢复；
+  支持复制、清空；日志带 `DEBUG/INFO/WARN/ERROR` 四级和 `[应用]` `[测速]`
+  `[节点]` `[接口]` 等类目标签，按级别着色，可用下拉框筛选（`log --level` 同理）；
+  旧版 2.x 符号式记录首次启动时自动归档为 `debug.log.legacy`
 - **CLI 全覆盖**：界面里的每个功能都有对应子命令，可脚本化
 - **安全**：提权脚本 0600 临时文件、密码只走 stdin、写完回读校验
 
@@ -52,7 +66,7 @@
 git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
-sudo pacman -U gh-proxy-manager-3.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U gh-proxy-manager-3.1.0-1-x86_64.pkg.tar.zst
 ```
 
 依赖（运行）：`gtk4` `libadwaita` `curl` `git`；构建：`cargo` `rust`。
@@ -77,7 +91,14 @@ cargo build --release --no-default-features   # 只编译 CLI，不依赖 GTK
 应用菜单「GitHub 下载加速管理」，或运行 `gh-proxy-manager gui`：
 
 - 勾选要开启的通道，确认加速地址，点右上角「应用」
-- 「备选地址」里：✓ 填入地址、▶ 测速、🗑 删除；下方可添加新地址、一键测速全部
+- 「备选地址」里：列表按速度从快到慢排列，每行有「测速 / 使用 / 删除」，勾选框在行首；
+  顶部「全选 / 删除选中 / 删除不可用 / 删除慢速」就地批量操作（不再弹窗，删除即进黑名单）；
+  「批量测速」可选全部 / 未测速 / 已测速 / 不可用；筛选框可按地址、速度、可用、未测试过滤；
+  底部可直接添加新地址
+- 黑名单窗口同样带筛选框，可单个恢复、全部恢复，或「全部删除」彻底清空
+- 「节点接口」里：显示当前接口地址，可切换、删除或添加接口；
+  点「拉取」只把清单里的地址并入备选（跳过黑名单），不自动测速
+- 顶栏切到「调试日志」可查看实时流式日志，支持复制 / 清空，会自动跟随最新（上滚暂停）
 
 ### 使用（命令行）
 
@@ -91,12 +112,12 @@ gh-proxy-manager use https://ghfast.top/ # 切换生效前缀（别名 url）
 gh-proxy-manager add <URL> / del <URL>  # 维护备选列表
 gh-proxy-manager proxies                # 列出备选地址与测速结果
 gh-proxy-manager test [--all]           # 真实 release 文件测速
-gh-proxy-manager nodes [--refresh] [--json] # 云端节点测速 + SHA-256 完整性校验
+gh-proxy-manager nodes [--refresh] [--json] # 拉取节点清单，全部并入备选（跳过黑名单）+ SHA-256 校验
 gh-proxy-manager auto [--dry-run]       # 自动选最快节点并设为生效地址
 gh-proxy-manager resolve <url>          # 查看链接会被怎样改写（不下载）
 gh-proxy-manager region                 # 检测出口地区（别名 where）
 gh-proxy-manager get <url> [-o 文件]    # 按当前配置下载（额外参数原样传给 curl）
-gh-proxy-manager log [-n 50]            # 调试日志
+gh-proxy-manager log [-n 50] [--level debug|info|warn|error]  # 调试日志
 gh-proxy-manager reset [--yes] [--purge]# 卸载清理
 ```
 
@@ -143,7 +164,7 @@ gh-proxy-manager get https://github.com/xxx/yyy/releases/download/v1/file.tar.gz
 /etc/gh-proxy/prefix · jsdelivr · nofailover
 /etc/makepkg.conf.d/99-gh-proxy.conf
 /usr/local/bin/curl-gh
-~/.config/gh-proxy-manager/{proxies,results,nodes.json,debug.log}
+~/.config/gh-proxy-manager/{proxies,blacklist,sources,source,results,nodes.json,debug.log,debug.log.legacy}
 ```
 
 旧 `proxies` 里的脏行、缺末尾 `/` 的地址会在读取时被清洗；`results` 的测速缓存继续可用。
@@ -160,7 +181,7 @@ gh-proxy-manager get https://github.com/xxx/yyy/releases/download/v1/file.tar.gz
 ### 开发
 
 ```bash
-cargo test          # 50 个单元测试 + 18 个端到端测试
+cargo test          # 59 个单元测试 + 20 个端到端测试
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -184,6 +205,7 @@ src/
 ├── paths.rs      磁盘布局（与 2.x 一致）
 ├── state.rs      从磁盘推导真实状态
 ├── mirrors.rs    地址规范化 / jsDelivr 转换 / 备选列表 / 结果缓存
+├── sources.rs    节点清单接口的校验、选择与持久化
 ├── gitcfg.rs     insteadOf 规则解析与同步（纯函数计划 + 执行）
 ├── apply.rs      生成 root 脚本 → 提权 → 同步 git → 回读校验
 ├── exec.rs       sudo / pkexec / 沙箱执行
@@ -199,7 +221,7 @@ tests/cli_flow.rs 真实二进制的端到端测试
 - root 脚本写入 0600 的临时文件后交给 `sudo -S` 执行，密码只出现在 stdin，不进命令行/环境变量
 - 只写自己的文件，绝不修改 `/etc/makepkg.conf`、不删除未知文件
 - 所有拼进 shell 的路径/地址都经过单引号转义（见 `shell::quote` 的测试）
-- 写入后回读校验，失败会明确提示并把细节记进 `debug.log`
+- 写入后回读校验，失败会明确提示并把细节记进 `debug.log`（3.x 起为带类目标签的可读中文记录）
 - 工具本身不保存任何凭据；加速地址只用于拼接 GitHub URL
 
 ### 卸载
@@ -220,7 +242,7 @@ MIT。界面与实现为本项目重写；原始 Bash 版本同样以 MIT 发布
 <a id="english"></a>
 ## English
 
-A complete **Rust + GTK4** rewrite (v3.0.0) of the GitHub download acceleration
+A complete **Rust + GTK4** rewrite (v3.1.0) of the GitHub download acceleration
 manager for Arch Linux. The old version was a 700-line Bash + yad script; this
 rewrite splits state detection, config generation, privilege escalation and
 speed testing into a testable library shared by the CLI and a native GTK4 UI.
@@ -239,8 +261,21 @@ installation without migration.
   `https://github.com/` are touched
 - Real speed tests: downloads an actual release file and reports KB/s, exposing
   mirrors that work for raw files but 404/throttle releases
-- Cloud node speed test: fetches the hubp node list, tests 32 nodes in parallel,
-  and verifies each response against a fixed icon's SHA-256; results cached for 2 h
+- Cloud node list: fetched from a manageable interface; **every** address is
+  deduplicated into the mirror pool without overwriting existing entries. The
+  GUI only pulls; the `nodes` command runs the 32-way SHA-256 verification
+  against a fixed icon (results cached for 2 h)
+- Node interface management: keep several interfaces, choose which one to pull
+  from, and see the active interface right in the UI
+- Bulk delete + blacklist: tick checkboxes inline and delete in one click (no
+  confirmation dialog), or wipe all failing or sub-200-KB/s mirrors with one click; deleted
+  addresses go to a blacklist that is skipped on the next pull. The blacklist
+  can be filtered, restored one by one or all at once, and permanently wiped
+- Batch speed tests over all / untested / tested / failing mirrors,
+  8-way parallel, results written back and the list re-sorted
+- Filters and sorting: mirrors are ordered fastest-first by measured speed
+  (failed/untested go last) and can be filtered live by address, speed,
+  availability or untested; the blacklist has the same filter
 - Link canonicalization: `codeload.github.com/.../zip/ref` is rewritten to
   `github.com/.../archive/ref.zip`, `/blob/` to `/raw/`; release, archive, raw
   and gist links are all recognized
@@ -248,7 +283,12 @@ installation without migration.
   stays below 20 KB/s for 30 s (toggleable)
 - Optional jsDelivr CDN for `raw.githubusercontent.com`, with fallback
 - Clean off: disabling restores direct downloads; `reset` removes runtime files
-- Native GTK4/libadwaita window; a single privilege escalation per apply
+- Native GTK4/libadwaita window with an embedded live debug-log page
+  (streamed live from the file, auto-follows the tail, pausing when you scroll
+  up and resuming at the bottom; copy, clear). Lines have `DEBUG/INFO/WARN/ERROR` levels and
+  category tags (`[apply]`, `[test]`, `[nodes]`, ...), are coloured by level and
+  filterable from a dropdown (`log --level` for the CLI); 2.x symbolic records
+  are archived to `debug.log.legacy` on first start; one escalation per apply
 - Full CLI; every UI action has a subcommand
 - Root script as a 0600 temp file, password via stdin, write-then-verify
 
@@ -262,7 +302,7 @@ installation without migration.
 git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
-sudo pacman -U gh-proxy-manager-3.0.0-1-*.pkg.tar.zst
+sudo pacman -U gh-proxy-manager-3.1.0-1-*.pkg.tar.zst
 ```
 
 From source:
@@ -286,8 +326,8 @@ gh-proxy-manager jsdelivr on|off
 gh-proxy-manager failover on|off
 gh-proxy-manager use <prefix>    # active mirror prefix
 gh-proxy-manager add/del <url>   # mirror pool
-gh-proxy-manager status | proxies | test [--all] | log
-gh-proxy-manager nodes [--refresh] [--json]  # cloud node test + SHA-256 verification
+gh-proxy-manager status | proxies | test [--all] | log [--level …]
+gh-proxy-manager nodes [--refresh] [--json]  # pull node list into mirrors (blacklist-aware) + SHA-256 verification
 gh-proxy-manager auto [--dry-run]            # pick the fastest verified node
 gh-proxy-manager resolve <url>               # show the rewritten URL, no download
 gh-proxy-manager region                      # egress region (alias: where)
@@ -338,7 +378,7 @@ the system level (makepkg / git / curl) without a browser.
 ### Development
 
 ```bash
-cargo test        # 50 unit + 18 end-to-end tests, no root required
+cargo test        # 59 unit + 20 end-to-end tests, no root required
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

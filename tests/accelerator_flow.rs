@@ -129,7 +129,17 @@ fn node_scan_verifies_and_selects_fastest() {
         format!("http://127.0.0.1:{good_port}/node")
     );
     assert_eq!(value["cached"], false);
+    assert_eq!(
+        value["added_to_mirrors"], 2,
+        "清单里的地址应全部并入备选: {value}"
+    );
+    assert_eq!(value["tests"].as_array().unwrap().len(), 2);
     assert!(sb.nodes_file().exists());
+
+    // 清单里的两个地址都进了备选列表（校验失败的也保留，只是不参与自动选择）。
+    let proxies = std::fs::read_to_string(sb.proxies_file()).unwrap();
+    assert!(proxies.contains(&format!("http://127.0.0.1:{good_port}/node/")));
+    assert!(proxies.contains(&format!("http://127.0.0.2:{bad_port}/node/")));
 
     // 第二次不带 --refresh：应直接读缓存。
     let cached = sb.run(&["nodes", "--json"], &envs);
@@ -150,7 +160,7 @@ fn node_scan_verifies_and_selects_fastest() {
         "坏节点不能被选中: {stdout}"
     );
 
-    // 真正执行 auto 会把校验通过的节点写进备选列表并设为生效地址（沙箱内无需提权）。
+    // 真正执行 auto 会把校验通过的节点设为生效地址（沙箱内无需提权）。
     let applied = sb.run(&["auto"], &envs);
     assert!(
         applied.status.success(),
@@ -159,7 +169,8 @@ fn node_scan_verifies_and_selects_fastest() {
     );
     let proxies = std::fs::read_to_string(sb.proxies_file()).unwrap();
     assert!(proxies.contains(&format!("http://127.0.0.1:{good_port}/node/")));
-    assert!(!proxies.contains(&format!("http://127.0.0.2:{bad_port}/node")));
+    // 清单里未通过校验的地址仍然保留在备选列表里，只是不会被 auto 选中。
+    assert!(proxies.contains(&format!("http://127.0.0.2:{bad_port}/node/")));
     let prefix = std::fs::read_to_string(sb.dir.path().join("root/etc/gh-proxy/prefix")).unwrap();
     assert_eq!(prefix.trim(), format!("http://127.0.0.1:{good_port}/node/"));
 }
@@ -198,6 +209,89 @@ fn resolve_rewrites_codeload_and_blob() {
 
     let out = sb.run(&["resolve", "https://example.com/file.zip"], &[]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// 黑名单里的地址不会被重新写入备选列表。
+#[test]
+fn blacklist_filters_remote_nodes() {
+    let good_port = spawn_node(ICON.to_vec(), None);
+    let nodes_json = format!(r#"{{"data":["http://127.0.0.1:{good_port}/node"]}}"#);
+    let list_port = spawn_node(ICON.to_vec(), Some(nodes_json));
+
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.dir.path().join("config/gh-proxy-manager")).unwrap();
+    std::fs::write(
+        sb.dir.path().join("config/gh-proxy-manager/blacklist"),
+        format!("http://127.0.0.1:{good_port}/node\n"),
+    )
+    .unwrap();
+
+    let envs = [
+        (
+            "GHPM_NODES_URL",
+            format!("http://127.0.0.1:{list_port}/nodes.json"),
+        ),
+        (
+            "GHPM_ICON_HASH_URL",
+            format!("http://127.0.0.1:{list_port}/icon"),
+        ),
+        (
+            "GHPM_NODE_TEST_URL",
+            "https://example.invalid/icon.png".to_string(),
+        ),
+    ];
+    let out = sb.run(&["nodes", "--refresh", "--json"], &envs);
+    assert!(
+        out.status.success(),
+        "nodes 失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["added_to_mirrors"], 0, "{value}");
+    let proxies = std::fs::read_to_string(sb.proxies_file()).unwrap();
+    assert!(
+        !proxies.contains(&format!("http://127.0.0.1:{good_port}/node")),
+        "黑名单地址不应被重新加入: {proxies}"
+    );
+}
+
+/// `sources` / `source` 文件里的当前接口优先于内置接口。
+#[test]
+fn nodes_use_selected_source() {
+    let node_a = spawn_node(ICON.to_vec(), None);
+    let node_b = spawn_node_on("127.0.0.2:0", ICON.to_vec(), None);
+    let json_a = format!(r#"{{"data":["http://127.0.0.1:{node_a}/node"]}}"#);
+    let json_b = format!(r#"{{"data":["http://127.0.0.2:{node_b}/node"]}}"#);
+    let list_a = spawn_node(ICON.to_vec(), Some(json_a));
+    let list_b = spawn_node_on("127.0.0.2:0", ICON.to_vec(), Some(json_b));
+
+    let sb = Sandbox::new();
+    let config = sb.dir.path().join("config/gh-proxy-manager");
+    std::fs::create_dir_all(&config).unwrap();
+    let source_a = format!("http://127.0.0.1:{list_a}/nodes.json");
+    let source_b = format!("http://127.0.0.2:{list_b}/nodes.json");
+    std::fs::write(config.join("sources"), format!("{source_a}\n{source_b}\n")).unwrap();
+    std::fs::write(config.join("source"), format!("{source_b}\n")).unwrap();
+
+    // 不设置 GHPM_NODES_URL，让程序自己从配置里选接口。
+    let envs = [
+        (
+            "GHPM_ICON_HASH_URL",
+            format!("http://127.0.0.1:{list_a}/icon"),
+        ),
+        ("GHPM_NODE_TEST_URL", "icon.png".to_string()),
+    ];
+    let out = sb.run(&["nodes", "--refresh", "--json"], &envs);
+    assert!(
+        out.status.success(),
+        "nodes 失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["source"], source_b);
+    let proxies = std::fs::read_to_string(sb.proxies_file()).unwrap();
+    assert!(proxies.contains(&format!("http://127.0.0.2:{node_b}/node/")));
+    assert!(!proxies.contains(&format!("http://127.0.0.1:{node_a}/node")));
 }
 
 #[test]

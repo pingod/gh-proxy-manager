@@ -1,6 +1,6 @@
 # Maintainer: pingod <https://github.com/pingod>
 pkgname=gh-proxy-manager
-pkgver=3.0.0
+pkgver=3.1.0
 pkgrel=1
 pkgdesc="管理 yay/makepkg 与 git clone 的 GitHub 下载加速（GTK4 图形界面 + 命令行）"
 arch=('x86_64' 'aarch64')

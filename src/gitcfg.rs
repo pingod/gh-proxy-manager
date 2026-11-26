@@ -155,16 +155,18 @@ pub fn sync(prefix: Option<&str>, logger: &Logger) -> Result<()> {
 
     let entries = global_entries();
     let plan = plan(&entries, prefix);
-    logger.log(format!(
-        "git 同步: prefix={:?} 删除 sections={:?} 写入={:?}",
-        prefix, plan.remove_sections, plan.set
+    logger.debug(format!(
+        "[git] 同步全局 insteadOf 规则：目标前缀={}，需删除旧规则 {} 条，需写入新规则 {} 条",
+        prefix.unwrap_or("（关闭 git 加速）"),
+        plan.remove_sections.len(),
+        usize::from(plan.set.is_some())
     ));
 
     for section in &plan.remove_sections {
         let section = format!("url.{section}");
         match run_git(&["--remove-section", &section]) {
-            Ok(()) => logger.log(format!("git 已删除 section {section}")),
-            Err(err) => logger.log(format!("git 删除 section 失败（忽略）: {err}")),
+            Ok(()) => logger.log(format!("[git] 已删除旧规则 {section}")),
+            Err(err) => logger.warn(format!("[git] 删除旧规则失败（已忽略）：{err}")),
         }
     }
 

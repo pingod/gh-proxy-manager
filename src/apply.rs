@@ -136,8 +136,12 @@ pub fn apply(
 ) -> Result<()> {
     let settings = settings.clone().normalized()?;
     logger.log(format!(
-        "apply 开始: makepkg={} git={} jsdelivr={} failover={} prefix={}",
-        settings.makepkg, settings.git, settings.jsdelivr, settings.failover, settings.prefix
+        "[应用] 开始应用设置：makepkg 加速={}，git 加速={}，jsDelivr={}，自动换站={}，加速地址={}",
+        crate::state::on_off(settings.makepkg),
+        crate::state::on_off(settings.git),
+        crate::state::on_off(settings.jsdelivr),
+        crate::state::on_off(settings.failover),
+        settings.prefix
     ));
 
     if settings.git && !shell::have("git") {
@@ -145,14 +149,18 @@ pub fn apply(
     }
 
     let script = root_script(paths, &settings);
-    logger.log(format!("root 脚本 {} 字节", script.len()));
+    logger.debug(format!(
+        "[应用] 已生成提权脚本（{} 行，{} 字节），即将提权执行",
+        script.lines().count(),
+        script.len()
+    ));
     runner.run_root(&script)?;
 
     let git_prefix = settings.git.then_some(settings.prefix.as_str());
     gitcfg::sync(git_prefix, logger)?;
 
     verify(paths, &settings, logger)?;
-    logger.log("apply 成功");
+    logger.log("[应用] 设置已生效");
     Ok(())
 }
 
@@ -198,11 +206,11 @@ pub fn verify(paths: &Paths, settings: &Settings, logger: &Logger) -> Result<()>
     }
 
     if problems.is_empty() {
-        logger.log("校验通过");
+        logger.log("[校验] 回读系统文件：全部符合预期");
         Ok(())
     } else {
         for problem in &problems {
-            logger.log(format!("校验失败: {problem}"));
+            logger.error(format!("[校验] 回读结果与预期不符：{problem}"));
         }
         Err(Error::msg(format!(
             "写入校验失败：\n{}",

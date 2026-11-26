@@ -9,6 +9,9 @@
 //! /etc/makepkg.conf.d/99-gh-proxy.conf
 //! /usr/local/bin/curl-gh             下载器包装脚本（自动换站）
 //! ~/.config/gh-proxy-manager/proxies 备选地址列表
+//! ~/.config/gh-proxy-manager/blacklist 不再自动加入的地址
+//! ~/.config/gh-proxy-manager/sources 节点清单接口列表
+//! ~/.config/gh-proxy-manager/source 当前使用的接口
 //! ~/.config/gh-proxy-manager/results 测速结果缓存
 //! ~/.config/gh-proxy-manager/nodes.json 云端节点测速缓存
 //! ~/.config/gh-proxy-manager/debug.log
@@ -51,6 +54,12 @@ pub struct Paths {
     /// `~/.config/gh-proxy-manager`
     pub user_dir: PathBuf,
     pub mirrors_file: PathBuf,
+    /// 删除过的地址：拉取远端清单时自动跳过。
+    pub blacklist_file: PathBuf,
+    /// 可选的节点清单接口列表。
+    pub sources_file: PathBuf,
+    /// 当前选中的节点清单接口。
+    pub source_file: PathBuf,
     pub results_file: PathBuf,
     pub nodes_file: PathBuf,
     pub log_file: PathBuf,
@@ -101,6 +110,9 @@ impl Paths {
             dlagent_conf: makepkg_conf_dir.join("99-gh-proxy.conf"),
             curl_gh: bin_dir.join("curl-gh"),
             mirrors_file: user_dir.join("proxies"),
+            blacklist_file: user_dir.join("blacklist"),
+            sources_file: user_dir.join("sources"),
+            source_file: user_dir.join("source"),
             results_file: user_dir.join("results"),
             nodes_file: user_dir.join("nodes.json"),
             log_file: user_dir.join("debug.log"),

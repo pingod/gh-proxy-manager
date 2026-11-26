@@ -19,6 +19,7 @@ pub mod mirrors;
 pub mod paths;
 pub mod probe;
 pub mod shell;
+pub mod sources;
 pub mod state;
 
 #[cfg(feature = "gui")]

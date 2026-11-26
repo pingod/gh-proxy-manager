@@ -238,6 +238,28 @@ impl MirrorList {
         Ok(url)
     }
 
+    /// 批量并入地址：保留已有条目和顺序，跳过重复项，返回真正新增的地址。
+    ///
+    /// 用于把云端节点清单写进备选列表：不清空、不覆盖用户已有的地址，
+    /// 只追加列表里还没有的。
+    pub fn merge(&self, inputs: &[String]) -> Result<Vec<String>> {
+        let mut list = self.load()?;
+        let mut added = Vec::new();
+        for input in inputs {
+            let Some(url) = normalize(input) else {
+                continue;
+            };
+            if !list.contains(&url) {
+                list.push(url.clone());
+                added.push(url);
+            }
+        }
+        if !added.is_empty() {
+            self.save(&list)?;
+        }
+        Ok(added)
+    }
+
     /// 删除一个地址；返回是否真的删掉了。
     pub fn remove(&self, input: &str) -> Result<bool> {
         let target = normalize(input).unwrap_or_else(|| input.trim().to_string());
@@ -252,6 +274,16 @@ impl MirrorList {
         self.save(&list)?;
         Ok(true)
     }
+}
+
+/// 从测速结论里取出速度（KB/s）。
+///
+/// 结论形如 `✓ 可用 · 141 KB/s`；失败（`✗ 不可用（HTTP 404）`）或
+/// 尚未测过（没有结论）时返回 `None`。
+pub fn verdict_speed(verdict: &str) -> Option<u64> {
+    let head = verdict.split_once(" KB/s").map(|(head, _)| head)?;
+    let digits = head.rsplit(|c: char| !c.is_ascii_digit()).next()?;
+    digits.parse().ok()
 }
 
 /// 清洗文本形式的列表内容。
@@ -466,6 +498,41 @@ mod tests {
         assert!(list.remove("https://b.example").unwrap());
         assert!(!list.remove("https://b.example").unwrap());
         assert_eq!(list.load().unwrap(), vec!["https://a.example/gh/"]);
+    }
+
+    #[test]
+    fn merge_appends_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = MirrorList::new(dir.path().join("proxies"));
+        list.save(&["https://keep.example/".into()]).unwrap();
+
+        let added = list
+            .merge(&[
+                "https://keep.example".to_string(),
+                "https://new.example".to_string(),
+                "https://new.example/".to_string(),
+                "not a url".to_string(),
+            ])
+            .unwrap();
+
+        assert_eq!(added, vec!["https://new.example/"]);
+        assert_eq!(
+            list.load().unwrap(),
+            vec!["https://keep.example/", "https://new.example/"]
+        );
+        assert!(
+            list.merge(&["https://keep.example/".into()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn verdict_speed_is_parsed() {
+        assert_eq!(verdict_speed("✓ 可用 · 141 KB/s"), Some(141));
+        assert_eq!(verdict_speed("✓ 可用 · 1024 KB/s"), Some(1024));
+        assert_eq!(verdict_speed("✗ 不可用（HTTP 404）"), None);
+        assert_eq!(verdict_speed("未测试"), None);
     }
 
     #[test]

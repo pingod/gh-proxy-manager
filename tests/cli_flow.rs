@@ -254,7 +254,7 @@ fn debug_log_is_written() {
     let sb = Sandbox::new();
     sb.ok(&["on"]);
     let log = sb.ok(&["log"]);
-    assert!(log.contains("apply 开始"));
+    assert!(log.contains("[应用] 开始应用设置"), "{log}");
 }
 
 #[allow(dead_code)]

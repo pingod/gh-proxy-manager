@@ -10,11 +10,12 @@ use crate::apply::{self, Settings};
 use crate::error::{Error, Result};
 use crate::exec::{Runner, SystemRunner};
 use crate::gitcfg;
-use crate::logging::Logger;
+use crate::logging::{self, Logger};
 use crate::mirrors::{self, MirrorList, ResultStore};
 use crate::paths::{DEFAULT_PREFIX, Paths};
 use crate::probe;
 use crate::shell;
+use crate::sources;
 use crate::state::{State, on_off};
 
 /// 顶层命令行参数。
@@ -105,6 +106,9 @@ pub enum Cmd {
         /// 只显示最后 N 行
         #[arg(short = 'n', long)]
         lines: Option<usize>,
+        /// 只显示不低于该级别的记录
+        #[arg(long, value_enum, default_value_t = LevelArg::Info)]
+        level: LevelArg,
     },
     /// 删除所有运行时文件（卸载后清理用）
     Reset {
@@ -115,6 +119,26 @@ pub enum Cmd {
         #[arg(long)]
         purge: bool,
     },
+}
+
+/// `log --level` 的取值。
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LevelArg {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LevelArg> for logging::Level {
+    fn from(value: LevelArg) -> Self {
+        match value {
+            LevelArg::Debug => logging::Level::Debug,
+            LevelArg::Info => logging::Level::Info,
+            LevelArg::Warn => logging::Level::Warn,
+            LevelArg::Error => logging::Level::Error,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -185,7 +209,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Cmd::Resolve { url } => run_resolve(&ctx, &url),
         Cmd::Region => run_region(),
         Cmd::Get { url, curl_args } => run_get(&ctx, &url, &curl_args),
-        Cmd::Log { lines } => run_log(&ctx, lines),
+        Cmd::Log { lines, level } => run_log(&ctx, lines, level.into()),
         Cmd::Reset { yes, purge } => run_reset(&ctx, yes, purge),
     }
 }
@@ -292,7 +316,13 @@ fn run_tests(ctx: &Ctx, all: bool) -> Result<i32> {
         let result = probe::probe_prefix(&prefix, &ctx.paths.test_url);
         let verdict = result.verdict();
         store.merge(&[(prefix.clone(), verdict.clone())])?;
-        ctx.logger.log(format!("test prefix={prefix} -> {verdict}"));
+        if verdict.starts_with('✓') {
+            ctx.logger
+                .log(format!("[测速] 当前生效地址 {prefix} → {verdict}"));
+        } else {
+            ctx.logger
+                .warn(format!("[测速] 当前生效地址 {prefix} → {verdict}"));
+        }
         println!("{verdict}");
         return Ok(if result.ok() { 0 } else { 1 });
     }
@@ -303,7 +333,11 @@ fn run_tests(ctx: &Ctx, all: bool) -> Result<i32> {
         eprintln!("测试中: {url}");
         let result = probe::probe_prefix(&url, &ctx.paths.test_url);
         let verdict = result.verdict();
-        ctx.logger.log(format!("test mirror={url} -> {verdict}"));
+        if verdict.starts_with('✓') {
+            ctx.logger.log(format!("[测速] {url} → {verdict}"));
+        } else {
+            ctx.logger.warn(format!("[测速] {url} → {verdict}"));
+        }
         println!("{url}\t{verdict}");
         updates.push((url, verdict));
     }
@@ -311,48 +345,173 @@ fn run_tests(ctx: &Ctx, all: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// 一次节点扫描的结果。
+struct NodeScan {
+    cache: NodeCache,
+    cached: bool,
+    fallback: bool,
+    /// 本次使用的节点清单接口。
+    source: String,
+    /// 缓存命中时为空；新扫描时包含每个节点的完整测速结论。
+    tests: Vec<accelerator::NodeTest>,
+}
+
 /// 返回一份可用的节点缓存：优先读缓存，否则拉取、测速、校验并落盘。
-fn node_cache(ctx: &Ctx, refresh: bool, concurrency: usize) -> Result<(NodeCache, bool, bool)> {
+fn node_scan(ctx: &Ctx, refresh: bool, concurrency: usize) -> Result<NodeScan> {
+    let source = sources::active(&ctx.paths);
     if !refresh {
         if let Some(cache) = NodeCache::load(&ctx.paths.nodes_file) {
-            return Ok((cache, true, false));
+            return Ok(NodeScan {
+                cache,
+                cached: true,
+                fallback: false,
+                source,
+                tests: Vec::new(),
+            });
         }
     }
 
-    let (nodes, fallback) = match accelerator::fetch_nodes() {
+    let (nodes, fallback) = match accelerator::fetch_nodes_from(&source) {
         Ok(nodes) => (nodes, false),
         Err(err) => {
-            eprintln!("拉取节点列表失败（{err}），改用内置兜底节点");
+            eprintln!("从 {source} 拉取节点列表失败（{err}），改用内置兜底节点");
             (accelerator::fallback_nodes(), true)
         }
     };
-
-    let expected = accelerator::fetch_expected_hash()
-        .map_err(|err| Error::msg(format!("无法获取节点完整性校验值: {err}")))?;
-    eprintln!("正在测速 {} 个节点（并发 {}）…", nodes.len(), concurrency);
-    let tests = accelerator::test_nodes(&nodes, &expected, concurrency);
-    let cache = NodeCache::from_tests(&tests, accelerator::now_secs());
-    if cache.nodes.is_empty() {
-        return Err(Error::msg("没有通过完整性校验的节点，已放弃自动选择"));
+    ctx.logger.log(format!(
+        "[节点] 使用接口 {source}，拉取到 {} 个节点",
+        nodes.len()
+    ));
+    if fallback {
+        ctx.logger.warn("[节点] 接口不可用，本次使用内置兜底节点");
     }
+
+    let tests = match accelerator::fetch_expected_hash() {
+        Ok(expected) => {
+            eprintln!("正在测速 {} 个节点（并发 {}）…", nodes.len(), concurrency);
+            accelerator::test_nodes(&nodes, &expected, concurrency)
+        }
+        Err(err) => {
+            // 校验值拿不到时仍然把地址全部收进备选列表，只是标记为未校验。
+            eprintln!("无法获取节点完整性校验值（{err}），本次只收集地址、不做校验");
+            ctx.logger.warn(format!(
+                "[节点] 无法获取完整性校验值：{err}；本次只收集地址，不做校验"
+            ));
+            nodes
+                .iter()
+                .map(|node| accelerator::NodeTest::failed(node, "未校验（无法获取完整性校验值）"))
+                .collect()
+        }
+    };
+
+    let cache = NodeCache::from_tests(&tests, accelerator::now_secs());
+    let verified = tests.iter().filter(|test| test.verified).count();
     cache.save(&ctx.paths.nodes_file)?;
     ctx.logger.log(format!(
-        "nodes: tested={} verified={} fallback={fallback}",
+        "[节点] 测速完成：共 {} 个节点，{} 个通过完整性校验",
         tests.len(),
-        cache.nodes.len()
+        verified
     ));
-    Ok((cache, false, fallback))
+    for test in tests.iter().filter(|test| test.verified) {
+        ctx.logger.debug(format!(
+            "[节点] 通过完整性校验：{}（{} ms）",
+            test.url,
+            test.latency_ms.unwrap_or(0)
+        ));
+    }
+    for test in tests.iter().filter(|test| !test.verified) {
+        ctx.logger.warn(format!(
+            "[节点] 未通过完整性校验：{}（{}）",
+            test.url, test.detail
+        ));
+    }
+    Ok(NodeScan {
+        cache,
+        cached: false,
+        fallback,
+        source,
+        tests,
+    })
+}
+
+/// 把一次扫描里的所有地址并入备选列表：不覆盖、去重、跳过黑名单，返回新增数量。
+fn merge_scan_into_mirrors(ctx: &Ctx, scan: &NodeScan) -> Result<usize> {
+    let blacklist = MirrorList::new(&ctx.paths.blacklist_file)
+        .load()
+        .unwrap_or_default();
+    let pairs: Vec<(String, String)> = if scan.cached {
+        scan.cache
+            .nodes
+            .iter()
+            .map(|node| {
+                let url = mirrors::normalize(&node.url).unwrap_or_else(|| node.url.clone());
+                (url, node.verdict())
+            })
+            .collect()
+    } else {
+        scan.tests
+            .iter()
+            .map(|test| {
+                let url = mirrors::normalize(&test.url).unwrap_or_else(|| test.url.clone());
+                (url, test.verdict())
+            })
+            .collect()
+    };
+    let pairs: Vec<(String, String)> = pairs
+        .into_iter()
+        .filter(|(url, _)| !blacklist.contains(url))
+        .collect();
+
+    let candidates: Vec<String> = pairs.iter().map(|(url, _)| url.clone()).collect();
+    let list = MirrorList::new(&ctx.paths.mirrors_file);
+    list.load_or_init()?;
+    let added = list.merge(&candidates)?;
+    ResultStore::new(&ctx.paths.results_file).merge(&pairs)?;
+    ctx.logger.log(format!(
+        "[节点] 已并入备选地址：新增 {} 个（跳过黑名单）",
+        added.len()
+    ));
+    Ok(added.len())
 }
 
 fn run_nodes(ctx: &Ctx, refresh: bool, json: bool, concurrency: usize) -> Result<i32> {
-    let (cache, cached, fallback) = node_cache(ctx, refresh, concurrency)?;
+    let scan = node_scan(ctx, refresh, concurrency)?;
+    let added = merge_scan_into_mirrors(ctx, &scan)?;
+    let cache = &scan.cache;
     let best = cache.best();
 
     if json {
+        let tests: Vec<serde_json::Value> = if scan.cached {
+            cache
+                .nodes
+                .iter()
+                .map(|node| {
+                    serde_json::json!({
+                        "url": node.url,
+                        "latency_ms": node.latency_ms,
+                        "verified": true,
+                        "verdict": node.verdict(),
+                    })
+                })
+                .collect()
+        } else {
+            scan.tests
+                .iter()
+                .map(|test| {
+                    serde_json::json!({
+                        "url": test.url,
+                        "latency_ms": test.latency_ms,
+                        "verified": test.verified,
+                        "detail": test.detail,
+                        "verdict": test.verdict(),
+                    })
+                })
+                .collect()
+        };
         let value = serde_json::json!({
-            "source": accelerator::nodes_url(),
-            "cached": cached,
-            "fallback": fallback,
+            "source": scan.source,
+            "cached": scan.cached,
+            "fallback": scan.fallback,
             "tested_at": cache.tested_at,
             "age_secs": cache.age_secs(),
             "nodes": cache.nodes.iter().map(|node| serde_json::json!({
@@ -360,35 +519,43 @@ fn run_nodes(ctx: &Ctx, refresh: bool, json: bool, concurrency: usize) -> Result
                 "latency_ms": node.latency_ms,
                 "verified": true,
             })).collect::<Vec<_>>(),
+            "tests": tests,
+            "added_to_mirrors": added,
             "best": best.map(|node| node.url.clone()),
         });
         let text = serde_json::to_string_pretty(&value)
             .map_err(|err| Error::msg(format!("生成 JSON 失败: {err}")))?;
         println!("{text}");
     } else {
-        if cached {
+        println!("接口: {}", scan.source);
+        if scan.cached {
             println!("云端节点（缓存 · {} 分钟前）:", cache.age_secs() / 60);
+            for (index, node) in cache.nodes.iter().enumerate() {
+                println!("  {}. {}  {} ms", index + 1, node.url, node.latency_ms);
+            }
         } else {
             println!("云端节点测速结果:");
-        }
-        for (index, node) in cache.nodes.iter().enumerate() {
-            println!("  {}. {}  {} ms", index + 1, node.url, node.latency_ms);
+            for (index, test) in scan.tests.iter().enumerate() {
+                println!("  {}. {}  {}", index + 1, test.url, test.verdict());
+            }
         }
         if let Some(best) = best {
             println!("\n最快节点: {}（{} ms）", best.url, best.latency_ms);
         }
-        if fallback {
+        if scan.fallback {
             println!("（节点列表源不可达，本次使用内置兜底节点）");
         }
+        println!("已并入备选地址: 新增 {added} 个（已有地址不覆盖、不重复）");
     }
     Ok(0)
 }
 
 fn run_auto(ctx: &Ctx, dry_run: bool) -> Result<i32> {
-    let (cache, cached, _) = node_cache(ctx, false, accelerator::DEFAULT_CONCURRENCY)?;
+    let scan = node_scan(ctx, false, accelerator::DEFAULT_CONCURRENCY)?;
+    let cache = &scan.cache;
     let best = cache
         .best()
-        .ok_or_else(|| Error::msg("没有通过完整性校验的节点"))?;
+        .ok_or_else(|| Error::msg("没有通过完整性校验的节点；先运行 nodes --refresh 查看原因"))?;
     let best_prefix =
         mirrors::normalize(&best.url).ok_or_else(|| Error::InvalidPrefix(best.url.clone()))?;
 
@@ -396,16 +563,15 @@ fn run_auto(ctx: &Ctx, dry_run: bool) -> Result<i32> {
         println!(
             "最快节点: {best_prefix}（{} ms{}）",
             best.latency_ms,
-            if cached { " · 缓存" } else { "" }
+            if scan.cached { " · 缓存" } else { "" }
         );
         return Ok(0);
     }
 
     let list = MirrorList::new(&ctx.paths.mirrors_file);
     list.load_or_init()?;
-    for node in &cache.nodes {
-        list.add(&node.url)?;
-    }
+    let verified: Vec<String> = cache.nodes.iter().map(|node| node.url.clone()).collect();
+    list.merge(&verified)?;
 
     let state = State::detect(&ctx.paths);
     let mut settings = Settings::from_state(&state);
@@ -478,7 +644,7 @@ fn run_get(ctx: &Ctx, url: &str, curl_args: &[String]) -> Result<i32> {
     // codeload / blob 先还原成官方形态，再按前缀改写。
     let canonical = accelerator::canonicalize(url).unwrap_or_else(|| url.to_string());
     let target = mirrors::rewrite_for_get(&canonical, state.prefix.as_deref(), state.jsdelivr);
-    ctx.logger.log(format!("get {url} -> {target}"));
+    ctx.logger.log(format!("[下载] {url} → {target}"));
 
     let status = std::process::Command::new("curl")
         .args(["-L", "--fail", "--retry", "3", "-O"])
@@ -489,7 +655,7 @@ fn run_get(ctx: &Ctx, url: &str, curl_args: &[String]) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn run_log(ctx: &Ctx, lines: Option<usize>) -> Result<i32> {
+fn run_log(ctx: &Ctx, lines: Option<usize>, level: logging::Level) -> Result<i32> {
     let text = match std::fs::read_to_string(&ctx.paths.log_file) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -498,6 +664,7 @@ fn run_log(ctx: &Ctx, lines: Option<usize>) -> Result<i32> {
         }
         Err(err) => return Err(Error::io(&ctx.paths.log_file, err)),
     };
+    let text = logging::filter_at_least(&text, level);
     let all: Vec<&str> = text.lines().collect();
     let start = lines.map(|n| all.len().saturating_sub(n)).unwrap_or(0);
     for line in &all[start..] {
@@ -525,6 +692,15 @@ fn run_reset(ctx: &Ctx, yes: bool, purge: bool) -> Result<i32> {
     runner.run_root(&script)?;
     gitcfg::sync(None, &ctx.logger)?;
 
+    ctx.logger.log(format!(
+        "[清理] 卸载清理完成（{}）",
+        if purge {
+            "含用户配置"
+        } else {
+            "保留用户配置"
+        }
+    ));
+
     if purge {
         match std::fs::remove_dir_all(&ctx.paths.user_dir) {
             Ok(()) => {}
@@ -532,8 +708,6 @@ fn run_reset(ctx: &Ctx, yes: bool, purge: bool) -> Result<i32> {
             Err(err) => return Err(Error::io(&ctx.paths.user_dir, err)),
         }
     }
-
-    ctx.logger.log(format!("reset 完成（purge={purge}）"));
     println!(
         "已清理运行时文件{}",
         if purge { "（含用户配置）" } else { "" }

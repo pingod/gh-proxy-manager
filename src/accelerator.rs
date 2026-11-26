@@ -288,9 +288,14 @@ fn cache_buster(url: &str) -> String {
     format!("{url}{separator}t={}", now_secs())
 }
 
-/// 拉取节点列表。
+/// 拉取节点列表（使用内置/环境变量指定的接口）。
 pub fn fetch_nodes() -> Result<Vec<String>> {
-    let bytes = http_get(&cache_buster(&nodes_url()), 8)?;
+    fetch_nodes_from(&nodes_url())
+}
+
+/// 从指定接口拉取节点列表。
+pub fn fetch_nodes_from(source: &str) -> Result<Vec<String>> {
+    let bytes = http_get(&cache_buster(source), 8)?;
     let nodes = parse_nodes(&String::from_utf8_lossy(&bytes));
     if nodes.is_empty() {
         return Err(Error::msg("节点列表为空或格式不正确"));
@@ -320,7 +325,8 @@ impl NodeTest {
         }
     }
 
-    fn failed(node: &str, detail: impl Into<String>) -> Self {
+    /// 构造一个未通过的结果（校验值拿不到、连接失败、哈希不符等）。
+    pub fn failed(node: &str, detail: impl Into<String>) -> Self {
         Self {
             url: node.to_string(),
             latency_ms: None,
