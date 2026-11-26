@@ -12,7 +12,7 @@ section: admin
 priority: optional
 maintainer: gh-proxy-manager contributors
 vendor: gh-proxy-manager
-homepage: https://github.com/Duter2016/gh-proxy-manager
+homepage: https://github.com/pingod/gh-proxy-manager
 license: MIT
 description: |
   管理 yay/makepkg、git clone 与 curl 的 GitHub 下载加速。

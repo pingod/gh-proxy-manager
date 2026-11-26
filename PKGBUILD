@@ -1,10 +1,10 @@
-# Maintainer: Duter2016 <https://github.com/Duter2016>
+# Maintainer: pingod <https://github.com/pingod>
 pkgname=gh-proxy-manager
 pkgver=3.0.0
 pkgrel=1
 pkgdesc="管理 yay/makepkg 与 git clone 的 GitHub 下载加速（GTK4 图形界面 + 命令行）"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Duter2016/gh-proxy-manager"
+url="https://github.com/pingod/gh-proxy-manager"
 license=('MIT')
 depends=('gtk4>=4.10' 'libadwaita>=1.7' 'curl' 'git' 'glibc' 'gcc-libs')
 makedepends=('cargo' 'rust')

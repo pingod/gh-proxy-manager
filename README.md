@@ -13,6 +13,9 @@
 测速”拆成可单元测试的库，CLI 与原生 GTK4 界面共用同一套逻辑。
 磁盘布局与 2.x **完全一致**，装上即可接管现有配置，无需迁移。
 
+本仓库：<https://github.com/pingod/gh-proxy-manager> ·
+原始 2.x Bash 版本：<https://github.com/Duter2016/gh-proxy-manager>
+
 ### 解决什么问题
 
 `yay -Syu` 升级 AUR 软件时，PKGBUILD 里写死的 `https://github.com/.../releases/download/...`
@@ -46,7 +49,7 @@
 #### Arch Linux（PKGBUILD）
 
 ```bash
-git clone https://github.com/Duter2016/gh-proxy-manager.git
+git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
 sudo pacman -U gh-proxy-manager-3.0.0-1-x86_64.pkg.tar.zst
@@ -222,6 +225,9 @@ manager for Arch Linux. The old version was a 700-line Bash + yad script; this
 rewrite splits state detection, config generation, privilege escalation and
 speed testing into a testable library shared by the CLI and a native GTK4 UI.
 
+This repository: <https://github.com/pingod/gh-proxy-manager> ·
+original 2.x Bash version: <https://github.com/Duter2016/gh-proxy-manager>
+
 **The on-disk layout is identical to 2.x**, so it takes over an existing
 installation without migration.
 
@@ -253,7 +259,7 @@ installation without migration.
 ### Install
 
 ```bash
-git clone https://github.com/Duter2016/gh-proxy-manager.git
+git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
 sudo pacman -U gh-proxy-manager-3.0.0-1-*.pkg.tar.zst
