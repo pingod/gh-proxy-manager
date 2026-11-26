@@ -7,7 +7,7 @@
 <a id="中文"></a>
 ## 中文
 
-用 **Rust + GTK4** 完全重写的 GitHub 下载加速管理器（v3.1.0）。
+用 **Rust + GTK4** 完全重写的 GitHub 下载加速管理器（v3.2.0）。
 
 旧版是一个 700 行的 Bash + yad/zenity 脚本；新版把“状态探测 / 配置生成 / 提权执行 /
 测速”拆成可单元测试的库，CLI 与原生 GTK4 界面共用同一套逻辑。
@@ -43,7 +43,10 @@
 - **链接规范化**：`codeload.github.com/.../zip/ref` 自动还原成
   `github.com/.../archive/ref.zip`，`/blob/` 还原成 `/raw/`；release / archive /
   raw / gist 链接全部识别
-- **自动换站**：失败或 <20KB/s 持续 30s 时，按备选列表断点续传换下一站（可开关）
+- **自动换站**：失败或龟速时按备选列表断点续传换下一站（可开关）；
+  龟速阈值可在界面上用拖动条调整（5–500 KB/s，默认 20 KB/s），保存即生效，
+  命令行对应 `slow <KB/s>`；阈值写在 `~/.config/gh-proxy-manager/slow-speed`，
+  `curl-gh` 每次调用都重新读取，下一次下载立即按新阈值判断
 - **可选 jsDelivr**：`raw.githubusercontent.com` 走 CDN，失败自动回退加速站
 - **开关零残留**：关闭即恢复直连；`reset` 一条命令清理运行时文件
 - **原生界面**：GTK4 + libadwaita，单窗口完成所有操作；内置「调试日志」页，
@@ -66,7 +69,7 @@
 git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
-sudo pacman -U gh-proxy-manager-3.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U gh-proxy-manager-3.2.0-1-x86_64.pkg.tar.zst
 ```
 
 依赖（运行）：`gtk4` `libadwaita` `curl` `git`；构建：`cargo` `rust`。
@@ -91,6 +94,8 @@ cargo build --release --no-default-features   # 只编译 CLI，不依赖 GTK
 应用菜单「GitHub 下载加速管理」，或运行 `gh-proxy-manager gui`：
 
 - 勾选要开启的通道，确认加速地址，点右上角「应用」
+- 「龟速换站阈值」拖动条可调 5–500 KB/s（默认 20）：下载速度低于该值并持续
+  30 秒就换下一个地址，松手保存后立即生效，不需要重新「应用」
 - 「备选地址」里：列表按速度从快到慢排列，每行有「测速 / 使用 / 删除」，勾选框在行首；
   顶部「全选 / 删除选中 / 删除不可用 / 删除慢速」就地批量操作（不再弹窗，删除即进黑名单）；
   「批量测速」可选全部 / 未测速 / 已测速 / 不可用；筛选框可按地址、速度、可用、未测试过滤；
@@ -108,6 +113,7 @@ gh-proxy-manager on / off               # yay/makepkg 加速
 gh-proxy-manager git-on / git-off       # git clone 加速
 gh-proxy-manager jsdelivr on|off        # raw.githubusercontent.com 走 jsDelivr
 gh-proxy-manager failover on|off        # 自动换站
+gh-proxy-manager slow [KB/s]            # 查看/设置龟速换站阈值（5–500）
 gh-proxy-manager use https://ghfast.top/ # 切换生效前缀（别名 url）
 gh-proxy-manager add <URL> / del <URL>  # 维护备选列表
 gh-proxy-manager proxies                # 列出备选地址与测速结果
@@ -242,7 +248,7 @@ MIT。界面与实现为本项目重写；原始 Bash 版本同样以 MIT 发布
 <a id="english"></a>
 ## English
 
-A complete **Rust + GTK4** rewrite (v3.1.0) of the GitHub download acceleration
+A complete **Rust + GTK4** rewrite (v3.2.0) of the GitHub download acceleration
 manager for Arch Linux. The old version was a 700-line Bash + yad script; this
 rewrite splits state detection, config generation, privilege escalation and
 speed testing into a testable library shared by the CLI and a native GTK4 UI.
@@ -280,7 +286,9 @@ installation without migration.
   `github.com/.../archive/ref.zip`, `/blob/` to `/raw/`; release, archive, raw
   and gist links are all recognized
 - Auto-failover: retries the next mirror with resume on failure or when speed
-  stays below 20 KB/s for 30 s (toggleable)
+  stays below a configurable threshold for 30 s (toggleable). The threshold is
+  a slider in the GUI (5–500 KB/s, default 20 KB/s); `curl-gh` re-reads it on
+  every run, so a change applies to the next download immediately. CLI: `slow <KB/s>`
 - Optional jsDelivr CDN for `raw.githubusercontent.com`, with fallback
 - Clean off: disabling restores direct downloads; `reset` removes runtime files
 - Native GTK4/libadwaita window with an embedded live debug-log page
@@ -302,7 +310,7 @@ installation without migration.
 git clone https://github.com/pingod/gh-proxy-manager.git
 cd gh-proxy-manager
 makepkg -f
-sudo pacman -U gh-proxy-manager-3.1.0-1-*.pkg.tar.zst
+sudo pacman -U gh-proxy-manager-3.2.0-1-*.pkg.tar.zst
 ```
 
 From source:

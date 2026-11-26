@@ -5,11 +5,11 @@
 //!
 //! 窗口用 `AdwViewStack` 分成「设置」和「调试日志」两页，日志不再另开窗口。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -21,6 +21,7 @@ use crate::exec::{self, SystemRunner};
 use crate::logging::{self, Level, Logger};
 use crate::mirrors::{self, MirrorList, ResultStore};
 use crate::paths::Paths;
+use crate::prefs;
 use crate::probe;
 use crate::sources::{self, SourceList};
 use crate::state::State;
@@ -62,6 +63,9 @@ struct Ui {
     sw_git: adw::SwitchRow,
     sw_jsd: adw::SwitchRow,
     sw_failover: adw::SwitchRow,
+    slow_row: adw::ActionRow,
+    slow_kbps: Cell<u32>,
+    slow_pending: Cell<u64>,
     prefix_row: adw::EntryRow,
     prefix_test_btn: gtk::Button,
     mirrors_group: adw::PreferencesGroup,
@@ -126,7 +130,9 @@ fn build_ui(app: &adw::Application, paths: Arc<Paths>, logger: Arc<Logger>) -> R
     // ---- 加速通道 ----
     let channel_group = adw::PreferencesGroup::new();
     channel_group.set_title("加速通道");
-    channel_group.set_description(Some("改动后点右上角「应用」才会写进系统"));
+    channel_group.set_description(Some(
+        "通道开关改动后点右上角「应用」才会写进系统；龟速阈值拖动后立即生效",
+    ));
 
     let sw_makepkg = adw::SwitchRow::builder()
         .title("yay / makepkg 下载加速")
@@ -145,13 +151,38 @@ fn build_ui(app: &adw::Application, paths: Arc<Paths>, logger: Arc<Logger>) -> R
         .build();
     let sw_failover = adw::SwitchRow::builder()
         .title("失败或龟速时自动换站")
-        .subtitle("按备选列表断点续传，低于 20KB/s 持续 30 秒即换站")
+        .subtitle("按备选列表断点续传，低于下方阈值持续 30 秒即换站")
         .active(state.failover)
         .build();
+
+    let slow_kbps_now = prefs::load_slow_kbps(&paths.slow_file);
+    let slow_scale = gtk::Scale::with_range(
+        gtk::Orientation::Horizontal,
+        f64::from(prefs::MIN_SLOW_KBPS),
+        f64::from(prefs::MAX_SLOW_KBPS),
+        5.0,
+    );
+    slow_scale.set_digits(0);
+    slow_scale.set_draw_value(true);
+    slow_scale.set_value_pos(gtk::PositionType::Right);
+    slow_scale.set_width_request(240);
+    slow_scale.set_hexpand(false);
+    slow_scale.set_valign(gtk::Align::Center);
+    slow_scale.set_value(f64::from(slow_kbps_now));
+    slow_scale.set_tooltip_text(Some(
+        "拖动设置龟速阈值（5–500 KB/s）：下载速度低于它并持续 30 秒，就换到下一个备用地址。松手即保存，新下载立即生效",
+    ));
+    let slow_row = adw::ActionRow::builder()
+        .title("龟速换站阈值")
+        .subtitle(slow_subtitle(slow_kbps_now))
+        .build();
+    slow_row.add_suffix(&slow_scale);
+
     channel_group.add(&sw_makepkg);
     channel_group.add(&sw_git);
     channel_group.add(&sw_jsd);
     channel_group.add(&sw_failover);
+    channel_group.add(&slow_row);
 
     // ---- 生效地址 ----
     let prefix_group = adw::PreferencesGroup::new();
@@ -368,6 +399,9 @@ fn build_ui(app: &adw::Application, paths: Arc<Paths>, logger: Arc<Logger>) -> R
         sw_git,
         sw_jsd,
         sw_failover,
+        slow_row,
+        slow_kbps: Cell::new(slow_kbps_now),
+        slow_pending: Cell::new(0),
         prefix_row,
         prefix_test_btn: prefix_test_btn.clone(),
         mirrors_group,
@@ -399,6 +433,10 @@ fn build_ui(app: &adw::Application, paths: Arc<Paths>, logger: Arc<Logger>) -> R
         let ui = ui.clone();
         let button = ui.prefix_test_btn.clone();
         button.connect_clicked(move |_| test_current(&ui));
+    }
+    {
+        let ui = ui.clone();
+        slow_scale.connect_value_changed(move |scale| on_slow_changed(&ui, scale.value()));
     }
     {
         let ui = ui.clone();
@@ -1861,6 +1899,46 @@ fn ask_password(parent: &adw::ApplicationWindow) -> Option<String> {
     dialog.present(Some(parent));
     loop_.run();
     answer.borrow().clone()
+}
+
+// ---------------------------------------------------------------------------
+// 龟速换站阈值
+// ---------------------------------------------------------------------------
+
+fn slow_subtitle(kbps: u32) -> String {
+    format!("低于 {kbps} KB/s 持续 {} 秒即换站", prefs::SLOW_TIME_SECS)
+}
+
+/// 拖动过程中先更新文案，停顿 400ms 后落盘，避免一次拖动写几十次文件。
+fn on_slow_changed(ui: &Rc<Ui>, value: f64) {
+    let kbps = prefs::clamp_kbps(value.round() as u32);
+    if kbps == ui.slow_kbps.get() {
+        return;
+    }
+    // 文件很小，每次整数变化都落盘：即使拖完立刻关窗也不会丢设置。
+    match prefs::save_slow_kbps(&ui.paths.slow_file, kbps) {
+        Ok(saved) => {
+            ui.slow_kbps.set(saved);
+            ui.slow_row.set_subtitle(&slow_subtitle(saved));
+
+            // 拖动过程中只更新界面，停顿 400ms 才写一条日志，避免刷屏。
+            let generation = ui.slow_pending.get() + 1;
+            ui.slow_pending.set(generation);
+            let ui = ui.clone();
+            glib::timeout_add_local_once(Duration::from_millis(400), move || {
+                if ui.slow_pending.get() == generation {
+                    ui.logger.debug(format!(
+                        "[设置] 龟速换站阈值已改为 {saved} KB/s，新下载立即生效"
+                    ));
+                }
+            });
+        }
+        Err(err) => {
+            ui.logger
+                .warn(format!("[设置] 保存龟速换站阈值失败：{err}"));
+            toast(ui, &format!("保存阈值失败：{err}"));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

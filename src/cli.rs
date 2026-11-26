@@ -13,6 +13,7 @@ use crate::gitcfg;
 use crate::logging::{self, Logger};
 use crate::mirrors::{self, MirrorList, ResultStore};
 use crate::paths::{DEFAULT_PREFIX, Paths};
+use crate::prefs;
 use crate::probe;
 use crate::shell;
 use crate::sources;
@@ -53,6 +54,11 @@ pub enum Cmd {
     Failover {
         #[arg(value_enum)]
         state: Toggle,
+    },
+    /// 查看或设置龟速换站阈值（KB/s，允许 5–500）
+    Slow {
+        /// 低于该速度持续 30 秒即换站；省略则只显示当前值
+        kbps: Option<u32>,
     },
     /// 设置生效的加速前缀（如 https://ghfast.top/）
     #[command(alias = "use")]
@@ -173,6 +179,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Cmd::GitOff => adjust(&ctx, |s| s.git = false),
         Cmd::Jsdelivr { state } => adjust(&ctx, move |s| s.jsdelivr = state.enabled()),
         Cmd::Failover { state } => adjust(&ctx, move |s| s.failover = state.enabled()),
+        Cmd::Slow { kbps } => run_slow(&ctx, kbps),
         Cmd::Url { prefix } => adjust(&ctx, move |s| s.prefix = prefix),
         Cmd::Add { url } => {
             let list = MirrorList::new(&ctx.paths.mirrors_file);
@@ -253,6 +260,32 @@ fn apply_settings(ctx: &Ctx, settings: Settings) -> Result<i32> {
     Ok(0)
 }
 
+fn run_slow(ctx: &Ctx, kbps: Option<u32>) -> Result<i32> {
+    match kbps {
+        None => println!(
+            "龟速换站阈值: {} KB/s（低于该值持续 {} 秒即换站）",
+            prefs::load_slow_kbps(&ctx.paths.slow_file),
+            prefs::SLOW_TIME_SECS
+        ),
+        Some(wanted) => {
+            let saved = prefs::save_slow_kbps(&ctx.paths.slow_file, wanted)?;
+            if saved != wanted {
+                println!(
+                    "允许范围是 {}–{} KB/s，已按 {} KB/s 保存",
+                    prefs::MIN_SLOW_KBPS,
+                    prefs::MAX_SLOW_KBPS,
+                    saved
+                );
+            }
+            ctx.logger.debug(format!(
+                "[设置] 龟速换站阈值已改为 {saved} KB/s（命令行，新下载立即生效）"
+            ));
+            println!("龟速换站阈值已设为 {saved} KB/s（新下载立即生效）");
+        }
+    }
+    Ok(0)
+}
+
 fn print_status(ctx: &Ctx) -> Result<()> {
     let state = State::detect(&ctx.paths);
     println!(
@@ -265,6 +298,11 @@ fn print_status(ctx: &Ctx) -> Result<()> {
         on_off(state.git),
         on_off(state.jsdelivr),
         on_off(state.failover)
+    );
+    println!(
+        "龟速换站阈值:     {} KB/s（持续 {} 秒）",
+        prefs::load_slow_kbps(&ctx.paths.slow_file),
+        prefs::SLOW_TIME_SECS
     );
     if let Some(cache) = NodeCache::load(&ctx.paths.nodes_file) {
         if let Some(best) = cache.best() {

@@ -4,7 +4,7 @@
 # 作用：让 makepkg 的 https DLAGENT 自动走加速站。
 #   * 前缀来自 /etc/gh-proxy/prefix；文件不存在/为空 = 官方直连
 #   * /etc/gh-proxy/nofailover 存在 = 只用当前生效站，不自动换站
-#   * 否则按「生效站 → 备选列表」顺序尝试；失败或龟速（<20KB/s 持续 30s）就换下一站
+#   * 否则按「生效站 → 备选列表」顺序尝试；失败或龟速（低于可配置阈值持续 30s）就换下一站
 #   * raw.githubusercontent.com 可选择走 jsDelivr CDN（/etc/gh-proxy/jsdelivr 存在时）
 #   * 已带加速前缀的 URL（https://proxy/https://github.com/...）原样透传
 #   * codeload / blob 链接先还原成官方下载形态，再拼接前缀
@@ -23,6 +23,26 @@ PREFIX_FILE="$CONF_DIR/prefix"
 JSDELIVR_MARKER="$CONF_DIR/jsdelivr"
 NOFAILOVER_MARKER="$CONF_DIR/nofailover"
 MIRROR_LIST="${XDG_CONFIG_HOME:-$HOME/.config}/gh-proxy-manager/proxies"
+SLOW_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/gh-proxy-manager/slow-speed"
+
+# 龟速换站阈值：图形界面写入 slow-speed（KB/s，5–500），缺失或非法时用 20。
+# 这个值每次调用都重新读取，所以在界面上拖动后立即生效，无需重新应用。
+slow_kbps=20
+if [ -r "$SLOW_FILE" ]; then
+    raw="$(tr -cd '0-9' < "$SLOW_FILE" 2>/dev/null)"
+    if [ -n "$raw" ] && [ "${#raw}" -le 4 ]; then
+        raw=$((10#$raw))
+        if [ "$raw" -ge 5 ] && [ "$raw" -le 500 ]; then
+            slow_kbps="$raw"
+        fi
+    fi
+fi
+speed_limit=$((slow_kbps * 1024))
+# 判定窗口固定 30 秒；GH_PROXY_SPEED_TIME 仅供测试缩短等待。
+speed_time="${GH_PROXY_SPEED_TIME:-30}"
+case "$speed_time" in
+    ''|*[!0-9]*) speed_time=30 ;;
+esac
 
 if [ "$#" -eq 0 ]; then
     echo "用法: curl-gh <url> [curl 参数...]" >&2
@@ -132,7 +152,7 @@ raw_to_jsdelivr() {
 # ① raw 优先尝试 jsDelivr（失败则继续走下面的一般流程）
 if [ "$is_raw" = 1 ] && [ -f "$JSDELIVR_MARKER" ]; then
     if jsd="$(raw_to_jsdelivr "$url")"; then
-        "$CURL" --connect-timeout 5 --speed-limit 20480 --speed-time 30 \
+        "$CURL" --connect-timeout 5 --speed-limit "$speed_limit" --speed-time "$speed_time" \
                 "$@" "$jsd" && exit 0
     fi
 fi
@@ -165,7 +185,7 @@ if [ -s "$PREFIX_FILE" ]; then
     fi
 
     for candidate in "${candidates[@]}"; do
-        "$CURL" --connect-timeout 5 --speed-limit 20480 --speed-time 30 \
+        "$CURL" --connect-timeout 5 --speed-limit "$speed_limit" --speed-time "$speed_time" \
                 "$@" "${candidate}${url}" && exit 0
     done
 fi

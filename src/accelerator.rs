@@ -226,23 +226,112 @@ fn env_url(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// 解析 `{"data":["https://...", ...]}`（也接受裸数组）。
+/// 不同清单里承载节点地址的键名。
+///
+/// hubp 用 `data`，FufuLauncher 用 `Mirrors`，Wasabi / Kototoro 用 `mirrors`，
+/// ns-emu-tools 用 `download` / `raw`，部分脚本用 `list` / `urls`。
+const NODE_LIST_KEYS: [&str; 8] = [
+    "data", "nodes", "mirrors", "Mirrors", "list", "urls", "download", "raw",
+];
+
+/// 清单里给出的“前缀模板”尾巴；去掉后剩下的才是可拼接的前缀。
+const PREFIX_TEMPLATE_TAILS: [&str; 4] = [
+    "/https://github.com",
+    "/http://github.com",
+    "/https://raw.githubusercontent.com",
+    "/http://raw.githubusercontent.com",
+];
+
+/// 这些主机不是加速节点：GitHub 官方域名本身就是目标，
+/// jsDelivr 只代理 raw 文件，都不能当通用前缀。
+const NOT_A_NODE_HOSTS: [&str; 7] = [
+    "github.com",
+    "www.github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "gist.githubusercontent.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+];
+
+/// 递归收集清单数组里的条目。
+///
+/// 顶层是对象时按 [`NODE_LIST_KEYS`] 找数组；对象/数组嵌套一层也能找到
+/// （例如 `{"github_mirrors":{"urls":[...]}}`、按分类分组的 `nodes`）。
+fn collect_node_items<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if item.is_object() || item.is_array() {
+                    collect_node_items(item, out);
+                }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if let serde_json::Value::Array(items) = child {
+                    if NODE_LIST_KEYS
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(key))
+                    {
+                        out.extend(items.iter());
+                        continue;
+                    }
+                    for item in items {
+                        if item.is_object() {
+                            collect_node_items(item, out);
+                        }
+                    }
+                } else if child.is_object() {
+                    collect_node_items(child, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 从一个条目里取出地址文本；对象形式支持 `url` / `prefix` / `endpoint` /
+/// `host` / `domain`，`strategy` 不是 `PREFIX` 的条目（如重写型镜像）跳过。
+fn node_text(item: &serde_json::Value) -> Option<&str> {
+    if let Some(text) = item.as_str() {
+        return Some(text);
+    }
+    let object = item.as_object()?;
+    if let Some(strategy) = object.get("strategy").and_then(serde_json::Value::as_str) {
+        if !strategy.eq_ignore_ascii_case("prefix") {
+            return None;
+        }
+    }
+    ["url", "prefix", "endpoint", "host", "domain"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(serde_json::Value::as_str))
+}
+
+/// 解析节点清单，兼容常见的几种 JSON 结构：
+///
+/// - 裸数组，或 `{"data": [...]}`
+/// - `{"nodes": [...]}`、`{"mirrors": [...]}`、`{"Mirrors": [...]}`、`{"list": [...]}`
+/// - `{"download": [...], "raw": [...]}`（条目可以是对象）
+/// - 嵌套的 `{"github_mirrors": {"urls": [...]}}`
 ///
 /// 规则与用户脚本一致：没有协议时补 `https://`，去掉末尾 `/`，
-/// 按主机名去重，丢弃非法项。
+/// 按主机名去重，丢弃非法项、带账号密码的地址和 GitHub 官方域名。
 pub fn parse_nodes(json: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
         return Vec::new();
     };
-    let list = value
-        .get("data")
-        .and_then(serde_json::Value::as_array)
-        .or_else(|| value.as_array());
+    let mut items = Vec::new();
+    if let serde_json::Value::Array(list) = &value {
+        items.extend(list.iter());
+    } else {
+        collect_node_items(&value, &mut items);
+    }
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
-    for item in list.into_iter().flatten() {
-        let Some(raw) = item.as_str() else {
+    for item in items {
+        let Some(raw) = node_text(item) else {
             continue;
         };
         let Some(node) = normalize_node(raw) else {
@@ -260,7 +349,16 @@ pub fn parse_nodes(json: &str) -> Vec<String> {
 }
 
 fn normalize_node(raw: &str) -> Option<String> {
-    let text = raw.trim().trim_end_matches('/');
+    let mut text = raw.trim().trim_matches(|c: char| "\"'`<>".contains(c));
+    let lower = text.to_ascii_lowercase();
+    if let Some(index) = PREFIX_TEMPLATE_TAILS
+        .iter()
+        .filter_map(|tail| lower.find(tail))
+        .min()
+    {
+        text = &text[..index];
+    }
+    let text = text.trim_end_matches('/');
     if text.is_empty() {
         return None;
     }
@@ -273,6 +371,17 @@ fn normalize_node(raw: &str) -> Option<String> {
     };
     let parts = parts(&node)?;
     if parts.query.is_some() {
+        return None;
+    }
+    let authority = node.split_once("://")?.1.split('/').next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let host = parts.host.to_ascii_lowercase();
+    if NOT_A_NODE_HOSTS.contains(&host.as_str())
+        || host == "jsdelivr.net"
+        || host.ends_with(".jsdelivr.net")
+    {
         return None;
     }
     Some(node)
@@ -822,7 +931,8 @@ mod tests {
             vec![
                 "https://gh.example".to_string(),
                 "https://gh2.example/gh".to_string(),
-                "http://gh3.example:8080/base".to_string()
+                "http://gh3.example:8080/base".to_string(),
+                "https://obj.example".to_string()
             ]
         );
         assert_eq!(
@@ -831,6 +941,75 @@ mod tests {
         );
         assert!(parse_nodes("not json").is_empty());
         assert!(parse_nodes(r#"{"data":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn parses_supported_node_list_shapes() {
+        let nodes = parse_nodes(
+            r#"{"nodes":[
+                "gh-a.example",
+                {"url":"https://gh-b.example/"},
+                {"host":"gh-c.example","strategy":"PREFIX"},
+                {"host":"gh-d.example","strategy":"REPLACE"}
+            ]}"#,
+        );
+        assert_eq!(
+            nodes,
+            vec![
+                "https://gh-a.example".to_string(),
+                "https://gh-b.example".to_string(),
+                "https://gh-c.example".to_string()
+            ]
+        );
+
+        let mirrors = parse_nodes(
+            r#"{"mirrors":[
+                {"id":"x","name":"X","host":"gh-e.example","strategy":"PREFIX"},
+                {"url":"https://gh-f.example/"}
+            ]}"#,
+        );
+        assert_eq!(
+            mirrors,
+            vec![
+                "https://gh-e.example".to_string(),
+                "https://gh-f.example".to_string()
+            ]
+        );
+
+        let fufu = parse_nodes(r#"{"Mirrors":["gh-g.example","https://gh-h.example/"]}"#);
+        assert_eq!(
+            fufu,
+            vec![
+                "https://gh-g.example".to_string(),
+                "https://gh-h.example".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_template_and_nested_node_lists() {
+        let mut nodes = parse_nodes(
+            r#"{"download":[{"url":"https://gh-i.example/https://github.com"}],
+                "raw":[{"url":"https://gh-j.example/https://raw.githubusercontent.com"}]}"#,
+        );
+        nodes.sort();
+        assert_eq!(
+            nodes,
+            vec![
+                "https://gh-i.example".to_string(),
+                "https://gh-j.example".to_string()
+            ]
+        );
+
+        let nested = parse_nodes(
+            r#"{"github_mirrors":{"urls":[
+                "https://ok.example",
+                "https://user:secret@bad.example",
+                "https://cdn.jsdelivr.net/gh",
+                "https://github.com"
+            ]}}"#,
+        );
+        assert_eq!(nested, vec!["https://ok.example".to_string()]);
     }
 
     #[test]

@@ -1,7 +1,12 @@
-//! 节点清单接口（nodes.json）的地址管理。
+//! 节点清单接口的地址管理。
 //!
 //! 用户可以维护多个接口，并选择其中一个作为“当前接口”；拉取云端节点
 //! 清单时只访问它。接口地址原样保存，允许带查询串（`?token=...`）。
+//!
+//! 接口返回的 JSON 由 [`crate::accelerator::parse_nodes`] 解析，兼容
+//! `data` / `nodes` / `mirrors` / `Mirrors` / `list` / `urls` /
+//! `download`+`raw` 等常见结构；条目既可以是字符串，也可以是带
+//! `url` / `prefix` / `host` / `domain` 的对象。
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -199,6 +199,23 @@ fn status_reflects_real_files() {
 }
 
 #[test]
+fn slow_threshold_roundtrip() {
+    let sb = Sandbox::new();
+    let slow_file = sb.dir.path().join("config/gh-proxy-manager/slow-speed");
+
+    // 未设置时显示默认 20 KB/s
+    assert!(sb.ok(&["slow"]).contains("20 KB/s"));
+
+    assert!(sb.ok(&["slow", "80"]).contains("80 KB/s"));
+    assert_eq!(std::fs::read_to_string(&slow_file).unwrap(), "80\n");
+    assert!(sb.ok(&["status"]).contains("80 KB/s"));
+
+    // 超出范围自动夹到 5–500
+    assert!(sb.ok(&["slow", "9999"]).contains("500 KB/s"));
+    assert_eq!(std::fs::read_to_string(&slow_file).unwrap(), "500\n");
+}
+
+#[test]
 fn reset_cleans_system_files() {
     let sb = Sandbox::new();
     sb.ok(&["on"]);

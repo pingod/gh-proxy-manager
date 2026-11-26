@@ -12,6 +12,7 @@
 //! ~/.config/gh-proxy-manager/blacklist 不再自动加入的地址
 //! ~/.config/gh-proxy-manager/sources 节点清单接口列表
 //! ~/.config/gh-proxy-manager/source 当前使用的接口
+//! ~/.config/gh-proxy-manager/slow-speed 龟速换站阈值（KB/s）
 //! ~/.config/gh-proxy-manager/results 测速结果缓存
 //! ~/.config/gh-proxy-manager/nodes.json 云端节点测速缓存
 //! ~/.config/gh-proxy-manager/debug.log
@@ -60,6 +61,8 @@ pub struct Paths {
     pub sources_file: PathBuf,
     /// 当前选中的节点清单接口。
     pub source_file: PathBuf,
+    /// 龟速换站阈值（KB/s），由 `curl-gh` 直接读取。
+    pub slow_file: PathBuf,
     pub results_file: PathBuf,
     pub nodes_file: PathBuf,
     pub log_file: PathBuf,
@@ -113,6 +116,7 @@ impl Paths {
             blacklist_file: user_dir.join("blacklist"),
             sources_file: user_dir.join("sources"),
             source_file: user_dir.join("source"),
+            slow_file: user_dir.join("slow-speed"),
             results_file: user_dir.join("results"),
             nodes_file: user_dir.join("nodes.json"),
             log_file: user_dir.join("debug.log"),
@@ -156,6 +160,10 @@ mod tests {
         assert_eq!(
             p.mirrors_file,
             PathBuf::from("/home/u/.config/gh-proxy-manager/proxies")
+        );
+        assert_eq!(
+            p.slow_file,
+            PathBuf::from("/home/u/.config/gh-proxy-manager/slow-speed")
         );
     }
 

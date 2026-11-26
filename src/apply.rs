@@ -249,6 +249,10 @@ mod tests {
         assert!(script.contains(": > '/etc/gh-proxy/jsdelivr'"));
         assert!(script.contains("rm -f '/etc/gh-proxy/nofailover'"));
         assert!(script.contains("mv -f \"$tmp\" '/etc/gh-proxy/prefix'"));
+        // 龟速阈值从用户配置读取，不再写死 20 KB/s
+        assert!(script.contains("gh-proxy-manager/slow-speed"));
+        assert!(script.contains("--speed-limit \"$speed_limit\""));
+        assert!(!script.contains("--speed-limit 20480"));
     }
 
     #[test]

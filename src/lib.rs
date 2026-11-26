@@ -17,6 +17,7 @@ pub mod gitcfg;
 pub mod logging;
 pub mod mirrors;
 pub mod paths;
+pub mod prefs;
 pub mod probe;
 pub mod shell;
 pub mod sources;
