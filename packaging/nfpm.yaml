@@ -1,0 +1,53 @@
+# nfpm 打包配置：一份文件同时产出 deb / rpm / archlinux 包。
+# 用法：
+#   VERSION=3.0.0 nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#   VERSION=3.0.0 nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
+#   VERSION=3.0.0 nfpm package -f packaging/nfpm.yaml -p archlinux -t dist/
+name: gh-proxy-manager
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: "1"
+section: admin
+priority: optional
+maintainer: gh-proxy-manager contributors
+vendor: gh-proxy-manager
+homepage: https://github.com/Duter2016/gh-proxy-manager
+license: MIT
+description: |
+  管理 yay/makepkg、git clone 与 curl 的 GitHub 下载加速。
+  支持云端节点测速、SHA-256 完整性校验、自动换站与链接规范化。
+contents:
+  - src: target/release/gh-proxy-manager
+    dst: /usr/bin/gh-proxy-manager
+  - src: assets/io.github.duter2016.GhProxyManager.desktop
+    dst: /usr/share/applications/io.github.duter2016.GhProxyManager.desktop
+  - src: assets/io.github.duter2016.GhProxyManager.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/io.github.duter2016.GhProxyManager.svg
+  - src: LICENSE
+    dst: /usr/share/licenses/gh-proxy-manager/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/gh-proxy-manager/README.md
+  - src: packaging/uninstall-cleanup.sh
+    dst: /var/lib/gh-proxy-manager/uninstall-cleanup.sh
+    file_info:
+      mode: 0755
+overrides:
+  deb:
+    depends:
+      - libgtk-4-1
+      - libadwaita-1-0
+      - curl
+      - git
+  rpm:
+    depends:
+      - gtk4
+      - libadwaita
+      - curl
+      - git
+  archlinux:
+    depends:
+      - gtk4
+      - libadwaita
+      - curl
+      - git

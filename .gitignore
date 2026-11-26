@@ -1,0 +1,10 @@
+/target/
+/pkg/
+/dist/
+/dist-appimage/
+*.pkg.tar.zst
+*.tar.gz
+*.AppImage
+*.deb
+*.rpm
+.DS_Store

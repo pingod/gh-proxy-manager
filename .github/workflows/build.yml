@@ -1,0 +1,103 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NFPM_VERSION: "2.49.0"
+
+jobs:
+  packages:
+    name: Build deb / rpm / AppImage / pacman
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git curl gtk4 libadwaita rust cargo zstd \
+            squashfs-tools patchelf desktop-file-utils
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-
+
+      - name: Format, lint, build and test
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo build --release --locked
+          cargo test --release --locked
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL --retry 3 -o /tmp/nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Build deb, rpm and pacman packages
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          mkdir -p dist
+          nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+          nfpm package --config packaging/nfpm.yaml --packager archlinux --target dist/
+          ls -lh dist
+
+      - name: Build AppImage
+        run: |
+          bash packaging/appimage/build-appimage.sh \
+            "${{ steps.version.outputs.value }}" dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: gh-proxy-manager-packages
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

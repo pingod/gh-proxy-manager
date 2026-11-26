@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d8ae6"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#bg)"/>
+
+  <!-- 地球 / 网络 -->
+  <g fill="none" stroke="#ffffff" stroke-width="4" opacity="0.9">
+    <circle cx="64" cy="46" r="22"/>
+    <path d="M42 46h44"/>
+    <path d="M64 24c7 7 11 14 11 22s-4 15-11 22c-7-7-11-14-11-22s4-15 11-22z"/>
+  </g>
+
+  <!-- 下载箭头 -->
+  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 74v26"/>
+    <path d="M50 88l14 14 14-14"/>
+    <path d="M38 108h52"/>
+  </g>
+</svg>
